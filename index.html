@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hidden Blackland Prairie Explorer</title>
+
+  <!-- Chart.js MUST load before the ArcGIS AMD loader, otherwise its UMD "define" collides with it -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- ArcGIS Maps SDK for JavaScript (4.x, widget API) -->
+  <link rel="stylesheet" href="https://js.arcgis.com/4.32/esri/themes/light/main.css" />
+  <script src="https://js.arcgis.com/4.32/"></script>
+
+  <style>
+    :root { --green:#2e6b4f; --gold:#d8c86a; --ink:#1f2a24; --muted:#5d6b63; --line:#d9ded9; }
+    * { box-sizing: border-box; }
+    html, body { margin:0; height:100%; font-family: "Avenir Next", "Segoe UI", Arial, sans-serif; color:var(--ink); }
+    #app { display:grid; grid-template-columns: 340px 1fr; grid-template-rows: 56px 1fr 260px; height:100%; }
+    header { grid-column: 1 / 3; display:flex; align-items:center; gap:14px; padding:0 18px;
+             background:var(--green); color:#fff; }
+    header h1 { font-size:18px; font-weight:600; margin:0; }
+    header span { font-size:13px; opacity:.85; }
+    #side { grid-row: 2 / 4; overflow:auto; border-right:1px solid var(--line); padding:14px 16px; background:#fafbf9; }
+    #viewDiv { grid-column:2; grid-row:2; }
+    #tableDiv { grid-column:2; grid-row:3; border-top:1px solid var(--line); }
+    h2 { font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--green); margin:18px 0 8px; }
+    p, li { font-size:13.5px; line-height:1.5; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+    button.tool { width:100%; padding:9px 10px; margin:4px 0; border:1px solid var(--green); background:#fff;
+                  color:var(--green); border-radius:6px; font-weight:600; cursor:pointer; }
+    button.tool.active { background:var(--green); color:#fff; }
+    #stats table { width:100%; border-collapse:collapse; font-size:13px; }
+    #stats td { padding:3px 0; border-bottom:1px dotted var(--line); }
+    #stats td:last-child { text-align:right; font-weight:600; }
+    .note { font-size:12px; color:var(--muted); }
+    #chartWrap { height:360px; }
+    .row { display:flex; gap:6px; margin:4px 0; }
+    .row button { flex:1; padding:8px 4px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; font-weight:600; }
+    .row button.np { border-color:#2e6b4f; color:#2e6b4f; } .row button.pl { border-color:#a33; color:#a33; } .row button.un { color:#666; }
+    select, input[type=text] { width:100%; padding:6px; border:1px solid var(--line); border-radius:6px; font-size:13px; }
+    #labelPanel { display:none; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Hidden Blackland Prairie Explorer</h1>
+    <span>Where could never-plowed prairie still survive in the Texas Blackland belt?</span>
+  </header>
+
+  <aside id="side">
+    <div class="card">
+      <p>The Texas Blackland Prairie once covered ~43,000 km². Only a small fraction (often cited as under 1%) is thought to survive unplowed.
+      This app maps the <b>candidate search space</b> for surviving remnants: Vertisol clay soils (Usterts)
+      that are grassland or pasture today.</p>
+      <p class="note">Users: TPWD and conservation groups, landowners, researchers.</p>
+    </div>
+
+    <h2>1 · Then and now (1951)</h2>
+    <button class="tool" id="btnSwipe">Compare 1951 aerial vs today</button>
+    <label class="note" style="display:flex;gap:6px;align-items:center;margin:2px 0 6px">
+      <input type="checkbox" id="chkCand" checked> Show candidate patches as outlines during comparison
+    </label>
+    <button class="tool" id="btnEO">Show known prairie occurrences (UTD sign-in)</button>
+    <p class="note">USDA 1951 index mosaic, Collin County (TxGIO). Positional offset of several metres is possible.
+    Occurrence polygons (TPWD TXNDD) are restricted to signed-in UTD users.</p>
+
+    <h2>2 · Measure an area</h2>
+    <p class="note">Draw a polygon or rectangle on the map to summarise candidate prairie inside it.</p>
+    <div id="sketchDiv"></div>
+    <div id="stats" class="card" style="display:none"></div>
+    <button class="tool" id="btnCsv" style="display:none">Download patch list for field survey (CSV)</button>
+
+    <h2>3 · Prioritise patches</h2>
+    <p class="note">Priority score (0–100) = 40% patch size + 40% closeness to a known remnant + 20% compactness.
+    Move the handles to show only the patches you care about.</p>
+    <div class="card"><div id="scoreSlider" style="height:110px"></div>
+      <p class="note" id="scoreInfo" style="margin:6px 0 0"></p></div>
+    <label class="note">Distance to nearest known remnant</label>
+    <select id="selBand">
+      <option value="">Any distance</option>
+      <option value="0-2 km">0–2 km</option><option value="2-5 km">2–5 km</option>
+      <option value="5-10 km">5–10 km</option><option value=">10 km">more than 10 km</option>
+    </select>
+
+    <h2>4 · Label patches on the 1951 photo</h2>
+    <p class="note">For researchers (UTD sign-in). Patches in Collin County are shown in random order; decide whether
+    each looked <b>plowed</b> in 1951. Known occurrences are hidden while labelling so the call stays blind.</p>
+    <button class="tool" id="btnLabel">Start labelling (UTD sign-in)</button>
+    <div id="labelPanel" class="card">
+      <p class="note" id="labelInfo">Loading…</p>
+      <div class="row">
+        <button class="np" data-v="not_plowed">Not plowed</button>
+        <button class="pl" data-v="plowed">Plowed</button>
+        <button class="un" data-v="unclear">Unclear</button>
+      </div>
+      <div class="row">
+        <select id="selConf"><option value="high">High confidence</option><option value="medium" selected>Medium</option><option value="low">Low</option></select>
+      </div>
+      <input type="text" id="txtNote" placeholder="Note (optional): e.g. contour rows visible, terraces, gilgai mottling">
+      <div class="row"><button id="btnSkip">Skip</button></div>
+      <p class="note" id="labelCount">Labelled this session: 0</p>
+    </div>
+
+    <h2>5 · Counties ranked</h2>
+    <div class="card" id="chartWrap"><canvas id="chart"></canvas></div>
+    <p class="note">Click a bar or a table row to zoom to that county.</p>
+
+    <h2>Data</h2>
+    <p class="note">Soils: USDA-NRCS gSSURGO (suborder Usterts, component ≥ 50%). Land cover: NLCD 2021 classes 71 &amp; 81.
+    Ecoregions: US EPA Level IV (32a–c). Prairie occurrences: TPWD TXNDD (counts only). 1951 imagery: TxGIO / USDA.</p>
+  </aside>
+
+  <div id="viewDiv"></div>
+  <div id="tableDiv"></div>
+</div>
+
+<script>
+require([
+  "esri/WebMap",
+  "esri/views/MapView",
+  "esri/layers/WMSLayer",
+  "esri/layers/GraphicsLayer",
+  "esri/widgets/Swipe",
+  "esri/widgets/FeatureTable",
+  "esri/widgets/Sketch",
+  "esri/widgets/Legend",
+  "esri/widgets/LayerList",
+  "esri/widgets/Expand",
+  "esri/widgets/Home",
+  "esri/geometry/geometryEngine",
+  "esri/identity/IdentityManager",
+  "esri/identity/OAuthInfo",
+  "esri/layers/FeatureLayer",
+  "esri/widgets/HistogramRangeSlider",
+  "esri/Graphic"
+], (WebMap, MapView, WMSLayer, GraphicsLayer, Swipe, FeatureTable, Sketch,
+    Legend, LayerList, Expand, Home, geometryEngine, IdentityManager, OAuthInfo,
+    FeatureLayer, HistogramRangeSlider, Graphic) => {
+
+  // URL of the editable, org-only label layer (patch_labels_1951 hosted feature layer, ".../FeatureServer/0")
+  const LABELS_URL = "https://services2.arcgis.com/VNo0ht0YPXJoI4oE/arcgis/rest/services/patch_labels_1951/FeatureServer/0";
+
+  // ---------- sign-in for the org-only TXNDD layer ----------
+  const PORTAL_URL = "https://utdepps.maps.arcgis.com";
+  const APP_ID = "XwNdEPGzjdKeW5qu";   // paste the OAuth Client ID here (ArcGIS Online > New item > Developer credentials)
+  if (APP_ID) {
+    IdentityManager.registerOAuthInfos([new OAuthInfo({ appId: APP_ID, portalUrl: PORTAL_URL, popup: false })]);
+  }
+  let eoLayer = null;   // kept aside; only added after a UTD sign-in
+
+  // ---------- map ----------
+  const webmap = new WebMap({ portalItem: { id: "059a1845bcf24669bad17734b68f2099" } });
+  const view = new MapView({ container: "viewDiv" });
+
+  // The TXNDD occurrence layer is shared with the UTD org only. Drop it from the public app
+  // before the view loads it, so visitors are not asked to sign in. (Counts per county stay
+  // available in blackland_counties.EO_Count.)
+  webmap.load().then(() => {
+    const eo = webmap.layers.find((l) => l.title === "blackland_prairie_EOs");
+    if (eo) { eoLayer = eo; webmap.remove(eo); }
+    webmap.addMany([hist1951, sketchLayer]);
+    view.map = webmap;
+  });
+
+  view.ui.add(new Home({ view }), "top-left");
+  view.ui.add(new Expand({ view, content: new Legend({ view }), expandTooltip: "Legend" }), "top-right");
+  view.ui.add(new Expand({ view, content: new LayerList({ view }), expandTooltip: "Layers" }), "top-right");
+
+  // 1951 aerial index mosaic (added in code so the Swipe widget can use it)
+  const hist1951 = new WMSLayer({
+    url: "https://mapserver.tnris.org/?map=/tnris_mapserver/mapfiles/collin_usda_1951_index.map",
+    sublayers: [{ name: "Collin_USDA_1951_index" }],
+    title: "USDA aerial index, 1951 (Collin)",
+    visible: false,
+    listMode: "hide"
+  });
+
+  const sketchLayer = new GraphicsLayer({ title: "Your drawing", listMode: "hide" });
+
+  const byTitle = (t) => webmap.allLayers.find((l) => l.title === t);
+
+  webmap.when(async () => {
+    try { await webmap.loadAll(); } catch (e) { console.warn("Some layers did not load", e); }
+    const counties  = byTitle("blackland_counties");
+    const candidate = byTitle("candidate_prairie_space");
+
+    counties.outFields = ["*"];
+    counties.popupTemplate = {
+      title: "{County} County",
+      content: `Candidate prairie space: <b>{Cand_km2} km²</b> ({Cand_pct}% of the county's Blackland area)<br>
+                Rank in belt: <b>#{Cand_rank}</b> of 45<br>
+                Known prairie occurrences (TXNDD): <b>{EO_Count}</b><br>
+                Grassland {Grass_km2} km² · Pasture {Past_km2} km² · Vertisols {Verti_km2} km²`
+    };
+    candidate.popupTemplate = {
+      title: "Candidate patch",
+      content: `{landcover}<br>Area: <b>{area_ha} ha</b> · County: {County}<br>
+                Priority score: <b>{score}</b> / 100<br>
+                Nearest known remnant: {dist_band} · Compactness: {compact}`
+    };
+    candidateLayer = candidate;
+
+    setupTable(counties);
+    setupChart(counties);
+    setupSketch(candidate, counties);
+    setupScoreFilter(candidate).catch((e) => {
+      document.getElementById("scoreInfo").textContent =
+        "Score fields not found. Overwrite candidate_prairie_space with the new zip (" + e.message + ")";
+    });
+  });
+
+  // ---------- known prairie occurrences (UTD sign-in) ----------
+  document.getElementById("btnEO").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    if (!eoLayer) { alert("Occurrence layer not found in the web map."); return; }
+    if (webmap.layers.includes(eoLayer)) {          // turn off
+      webmap.remove(eoLayer); btn.classList.remove("active");
+      btn.textContent = "Show known prairie occurrences (UTD sign-in)";
+      return;
+    }
+    try {
+      await IdentityManager.getCredential(PORTAL_URL + "/sharing");
+      eoLayer.renderer = {
+        type: "simple",
+        symbol: { type: "simple-fill", color: [0, 0, 0, 0], outline: { color: [255, 59, 48, 1], width: 2 } }
+      };
+      eoLayer.popupTemplate = { title: "{COMMON_NAM}", content: "TXNDD EO {EO_ID} · {County} County · {area_ha} ha · last observed {LASTOBS}" };
+      webmap.add(eoLayer);                          // added last = drawn on top of the 1951 photo too
+      await eoLayer.load();
+      btn.classList.add("active"); btn.textContent = "Hide prairie occurrences";
+    } catch (err) {
+      alert("Sign-in was cancelled or failed: " + err.message);
+    }
+  });
+
+  // ---------- widget 1: Swipe (1951 vs today) ----------
+  let swipe = null;
+  let candidateFillRenderer = null;
+  document.getElementById("btnSwipe").addEventListener("click", () => setSwipe(!swipe, true));
+
+  async function setSwipe(on, zoomToDemo) {
+    const btn = document.getElementById("btnSwipe");
+    const candidate = webmap.allLayers.find((l) => l.title === "candidate_prairie_space");
+    if (!on) {
+      if (!swipe) return;              // turn off
+      view.ui.remove(swipe); swipe.destroy(); swipe = null;
+      hist1951.visible = false; btn.classList.remove("active");
+      if (candidate) {
+        if (candidateFillRenderer) candidate.renderer = candidateFillRenderer;
+        candidate.visible = true;
+      }
+      btn.textContent = "Compare 1951 aerial vs today";
+      return;
+    }
+    if (swipe) return;
+    try {
+      await hist1951.load();
+    } catch (err) {
+      alert("The 1951 imagery service could not be loaded (" + err.message + ").");
+      return;
+    }
+    hist1951.visible = true;
+    if (candidate) {
+      if (document.getElementById("chkCand").checked) {
+        // draw candidate patches as bright outlines ABOVE the 1951 photo
+        candidateFillRenderer = candidate.renderer.clone();
+        candidate.renderer = {
+          type: "unique-value", field: "lc_code",
+          uniqueValueInfos: [
+            { value: 1, label: "Grassland/Herbaceous (NLCD 71)",
+              symbol: { type: "simple-fill", color: [0, 0, 0, 0], outline: { color: [0, 229, 255, 1], width: 1.5 } } },
+            { value: 2, label: "Pasture/Hay (NLCD 81)",
+              symbol: { type: "simple-fill", color: [0, 0, 0, 0], outline: { color: [255, 212, 0, 1], width: 1.5 } } }
+          ]
+        };
+        if (webmap.layers.indexOf(hist1951) > webmap.layers.indexOf(candidate)) {
+          webmap.reorder(hist1951, webmap.layers.indexOf(candidate)); // 1951 photo moves below the patches
+        }
+        candidate.visible = true;
+      } else {
+        candidate.visible = false;                                     // clean photo-to-photo comparison
+      }
+    }
+    swipe = new Swipe({ view, leadingLayers: [hist1951], trailingLayers: [], position: 50 });
+    view.ui.add(swipe);
+    btn.classList.add("active");
+    btn.textContent = "Close 1951 comparison";
+    if (zoomToDemo) view.goTo({ center: [-96.4597, 33.3398], zoom: 14 });   // EO area, NE Collin County
+  }
+
+  // ---------- widget 2: FeatureTable (counties) ----------
+  let table;
+  function setupTable(counties) {
+    table = new FeatureTable({
+      view,
+      layer: counties,
+      container: "tableDiv",
+      visibleElements: { selectionColumn: true, menuItems: { clearSelection: true, zoomToSelection: true } },
+      tableTemplate: {
+        columnTemplates: [
+          { type: "field", fieldName: "Cand_rank", label: "Rank", initialSortPriority: 0, direction: "asc" },
+          { type: "field", fieldName: "County", label: "County" },
+          { type: "field", fieldName: "Cand_km2", label: "Candidate km²" },
+          { type: "field", fieldName: "Cand_pct", label: "% of county" },
+          { type: "field", fieldName: "EO_Count", label: "Known occurrences" },
+          { type: "field", fieldName: "Grass_km2", label: "Grassland km²" },
+          { type: "field", fieldName: "Past_km2", label: "Pasture km²" },
+          { type: "field", fieldName: "County_km2", label: "Blackland area km²" }
+        ]
+      }
+    });
+    // zoom to a county when its row is selected
+    table.highlightIds.on("change", async (evt) => {
+      if (!evt.added.length) return;
+      const res = await counties.queryFeatures({ objectIds: [evt.added.at(-1)], returnGeometry: true });
+      if (res.features.length) view.goTo(res.features[0].geometry.extent.expand(1.3));
+    });
+    // clicking a county on the map selects its row
+    view.on("click", async (event) => {
+      const hit = await view.hitTest(event, { include: [counties] });
+      const g = hit.results[0]?.graphic;
+      if (g) { table.highlightIds.removeAll(); table.highlightIds.add(g.attributes[counties.objectIdField]); }
+    });
+  }
+
+  // ---------- chart: top 15 counties ----------
+  async function setupChart(counties) {
+    const res = await counties.queryFeatures({
+      where: "1=1", outFields: ["County", "Cand_km2", counties.objectIdField],
+      orderByFields: ["Cand_km2 DESC"], num: 15, returnGeometry: false
+    });
+    const rows = res.features.map((f) => f.attributes);
+    const chart = new Chart(document.getElementById("chart"), {
+      type: "bar",
+      data: {
+        labels: rows.map((r) => r.County),
+        datasets: [{ label: "Candidate prairie space (km²)", data: rows.map((r) => r.Cand_km2),
+                     backgroundColor: rows.map((_, i) => (i < 3 ? "#1b4332" : "#74a58a")) }]
+      },
+      options: {
+        indexAxis: "y", maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { title: { display: true, text: "km²" } },
+          y: { ticks: { autoSkip: false, font: { size: 11 } } }
+        },
+        onClick: (_, els) => {
+          if (!els.length || !table) return;
+          const oid = rows[els[0].index][counties.objectIdField];
+          table.highlightIds.removeAll(); table.highlightIds.add(oid);
+        }
+      }
+    });
+  }
+
+  // ---------- widget 3: Sketch + spatial query ----------
+  function setupSketch(candidate, counties) {
+    const sketch = new Sketch({
+      view, layer: sketchLayer, container: "sketchDiv", creationMode: "single",
+      availableCreateTools: ["polygon", "rectangle"],
+      visibleElements: { selectionTools: { "lasso-selection": false, "rectangle-selection": false },
+                         settingsMenu: false, undoRedoMenu: false }
+    });
+    sketch.on("create", async (evt) => {
+      if (evt.state !== "complete") return;
+      sketchLayer.removeMany(sketchLayer.graphics.filter((g) => g !== evt.graphic).toArray());
+      await summarise(evt.graphic.geometry, candidate, counties);
+    });
+    sketch.on("update", async (evt) => {
+      if (evt.state === "complete") await summarise(evt.graphics[0].geometry, candidate, counties);
+    });
+  }
+
+  async function summarise(geom, candidate, counties) {
+    const box = document.getElementById("stats");
+    box.style.display = "block";
+    box.innerHTML = "<p class='note'>Calculating…</p>";
+
+    const drawnKm2 = geometryEngine.geodesicArea(geom, "square-kilometers");
+
+    const statsQ = candidate.createQuery();
+    statsQ.geometry = geom;
+    statsQ.where = currentWhere;
+    statsQ.spatialRelationship = "intersects";
+    statsQ.groupByFieldsForStatistics = ["landcover"];
+    statsQ.outStatistics = [
+      { statisticType: "sum",   onStatisticField: "area_ha", outStatisticFieldName: "ha" },
+      { statisticType: "count", onStatisticField: "area_ha", outStatisticFieldName: "n" }
+    ];
+    const [stats, ctyRes] = await Promise.all([
+      candidate.queryFeatures(statsQ),
+      counties.queryFeatures({ geometry: geom, spatialRelationship: "intersects", outFields: ["County"], returnGeometry: false })
+    ]);
+
+    let totHa = 0, totN = 0, rows = "";
+    stats.features.forEach((f) => {
+      const a = f.attributes; totHa += a.ha; totN += a.n;
+      rows += `<tr><td>${a.landcover}</td><td>${(a.ha / 100).toFixed(1)} km²</td></tr>`;
+    });
+    const names = ctyRes.features.map((f) => f.attributes.County).join(", ") || "none";
+
+    box.innerHTML = `
+      <table>
+        <tr><td>Area drawn</td><td>${drawnKm2.toFixed(1)} km²</td></tr>
+        <tr><td>Candidate patches</td><td>${totN.toLocaleString()}</td></tr>
+        <tr><td>Candidate area</td><td>${(totHa / 100).toFixed(1)} km²</td></tr>
+        ${rows}
+        <tr><td>Share of drawn area</td><td>${drawnKm2 ? Math.min(100, 100 * totHa / 100 / drawnKm2).toFixed(1) : 0}%</td></tr>
+      </table>
+      <p class="note">Counties: ${names}.<br>Only patches passing the priority filter are counted.
+      Patches that cross the drawn edge are counted in full, so totals are slightly high.</p>`;
+    lastGeom = geom;
+    document.getElementById("btnCsv").style.display = totN ? "block" : "none";
+  }
+
+  // ---------- priority score filter (HistogramRangeSlider) ----------
+  let candidateLayer = null, currentWhere = "1=1", lastGeom = null, scoreRange = [0, 100];
+  async function setupScoreFilter(candidate) {
+    const q = candidate.createQuery();
+    q.where = "1=1";
+    q.groupByFieldsForStatistics = ["score"];
+    q.outStatistics = [{ statisticType: "count", onStatisticField: "score", outStatisticFieldName: "n" }];
+    q.orderByFields = ["score"];
+    const res = await candidate.queryFeatures(q);
+    const counts = {}; res.features.forEach((f) => (counts[f.attributes.score] = f.attributes.n));
+    const bins = [];
+    for (let v = 0; v < 100; v += 2) bins.push({ minValue: v, maxValue: v + 2, count: (counts[v] || 0) + (counts[v + 1] || 0) });
+
+    const slider = new HistogramRangeSlider({
+      container: "scoreSlider", min: 0, max: 100, values: [0, 100], bins, precision: 0,
+      rangeType: "between", excludedBarColor: "#d9ded9", includedBarColor: "#2e6b4f"
+    });
+    slider.on(["thumb-change", "thumb-drag", "segment-drag"], () => { scoreRange = slider.values; applyFilter(); });
+    document.getElementById("selBand").addEventListener("change", applyFilter);
+    applyFilter();
+  }
+
+  async function applyFilter() {
+    const band = document.getElementById("selBand").value;
+    currentWhere = `score >= ${Math.round(scoreRange[0])} AND score <= ${Math.round(scoreRange[1])}` +
+                   (band ? ` AND dist_band = '${band}'` : "");
+    // apply the filter to the drawn layer without waiting (the layer view only exists once zoomed in)
+    view.whenLayerView(candidateLayer).then((lv) => { lv.filter = { where: currentWhere }; });
+    const n = await candidateLayer.queryFeatureCount({ where: currentWhere });
+    document.getElementById("scoreInfo").textContent =
+      `Score ${Math.round(scoreRange[0])}–${Math.round(scoreRange[1])}${band ? ", " + band : ""}: ${n.toLocaleString()} patches shown`;
+  }
+
+  // ---------- export field-survey list (CSV) ----------
+  document.getElementById("btnCsv").addEventListener("click", async () => {
+    if (!lastGeom) return;
+    const rows = [];
+    for (let start = 0; start < 10000; start += 2000) {
+      const res = await candidateLayer.queryFeatures({
+        geometry: lastGeom, spatialRelationship: "intersects", where: currentWhere,
+        outFields: ["patch_id", "County", "landcover", "area_ha", "score", "dist_band", "compact"],
+        orderByFields: ["score DESC"], returnGeometry: true, outSpatialReference: { wkid: 4326 },
+        start, num: 2000
+      });
+      res.features.forEach((f) => {
+        const c = f.geometry.centroid, a = f.attributes;
+        rows.push([a.patch_id, a.County, a.landcover, a.area_ha, a.score, a.dist_band, a.compact,
+                   c.latitude.toFixed(6), c.longitude.toFixed(6)]);
+      });
+      if (!res.exceededTransferLimit) break;
+    }
+    const header = "patch_id,county,landcover,area_ha,priority_score,nearest_remnant,compactness,lat,lon";
+    const csv = [header, ...rows.map((r) => r.map((v) => `"${v}"`).join(","))].join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = `blackland_candidate_patches_${rows.length}.csv`;
+    a.click();
+  });
+
+  // ---------- labelling mode (UTD sign-in, writes to patch_labels_1951) ----------
+  let labelLayer = null, currentPatch = null, labelHighlight = null, nLabelled = 0, labelledIds = new Set();
+  document.getElementById("btnLabel").addEventListener("click", async (e) => {
+    const btn = e.currentTarget, panel = document.getElementById("labelPanel");
+    if (labelLayer) {                                   // stop
+      labelLayer = null; panel.style.display = "none";
+      if (labelHighlight) labelHighlight.remove();
+      btn.classList.remove("active"); btn.textContent = "Start labelling (UTD sign-in)";
+      return;
+    }
+    if (!LABELS_URL) { alert("Set LABELS_URL in index.html to the patch_labels_1951 layer URL first."); return; }
+    try {
+      await IdentityManager.getCredential(PORTAL_URL + "/sharing");
+      labelLayer = new FeatureLayer({ url: LABELS_URL });
+      await labelLayer.load();
+      const done = await labelLayer.queryFeatures({ where: "patch_id > 0", outFields: ["patch_id"], returnGeometry: false });
+      done.features.forEach((f) => labelledIds.add(f.attributes.patch_id));
+    } catch (err) { labelLayer = null; alert("Could not open the label layer: " + err.message); return; }
+    if (eoLayer && webmap.layers.includes(eoLayer)) document.getElementById("btnEO").click();  // keep it blind
+    await setSwipe(true, false);
+    panel.style.display = "block"; btn.classList.add("active"); btn.textContent = "Stop labelling";
+    nextPatch();
+  });
+
+  async function nextPatch() {
+    const where = "County = 'Collin'" + (labelledIds.size ? ` AND patch_id NOT IN (${[...labelledIds].join(",")})` : "");
+    const n = await candidateLayer.queryFeatureCount({ where });
+    if (!n) { document.getElementById("labelInfo").textContent = "All Collin patches are labelled."; return; }
+    const res = await candidateLayer.queryFeatures({
+      where, outFields: ["*"], returnGeometry: true, orderByFields: ["patch_id"],
+      start: Math.floor(Math.random() * n), num: 1
+    });
+    currentPatch = res.features[0];
+    const a = currentPatch.attributes;
+    document.getElementById("labelInfo").innerHTML =
+      `Patch <b>#${a.patch_id}</b> · ${a.area_ha} ha · ${n.toLocaleString()} unlabelled left in Collin`;
+    await view.goTo(currentPatch.geometry.extent.expand(3));
+    const lv = await view.whenLayerView(candidateLayer);
+    if (labelHighlight) labelHighlight.remove();
+    labelHighlight = lv.highlight(currentPatch);
+  }
+
+  document.querySelectorAll("#labelPanel .row button[data-v]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!currentPatch || !labelLayer) return;
+      const a = currentPatch.attributes;
+      const g = new Graphic({
+        geometry: currentPatch.geometry.centroid,
+        attributes: { patch_id: a.patch_id, label: b.dataset.v, confidence: document.getElementById("selConf").value,
+                      note: document.getElementById("txtNote").value, cand_lc: a.landcover }
+      });
+      const r = await labelLayer.applyEdits({ addFeatures: [g] });
+      if (r.addFeatureResults[0].error) { alert("Save failed: " + r.addFeatureResults[0].error.message); return; }
+      labelledIds.add(a.patch_id); nLabelled++;
+      document.getElementById("labelCount").textContent = `Labelled this session: ${nLabelled}`;
+      document.getElementById("txtNote").value = "";
+      nextPatch();
+    }));
+  document.getElementById("btnSkip").addEventListener("click", nextPatch);
+});
+</script>
+</body>
+</html>
